@@ -9,4 +9,4 @@ uv run --project ./scripts --locked intel-image-generator -i prompts.txt -o "$PW
 uv run --project ./scripts --locked pytest
 ```
 
-Custom models use `-m NAMESPACE/REPOSITORY`; only compatible Diffusers Stable Diffusion text-to-image repositories supported by Optimum Intel are in scope. Outputs and model caches are outside this package; first use downloads and exports model data. GPU is default, CPU requires explicit selection.
+Custom models use `-m NAMESPACE/REPOSITORY`; only compatible Diffusers Stable Diffusion text-to-image repositories supported by Optimum Intel are in scope. Use `-r/--reference` for IP-Adapter reference conditioning with explicit original SD 1.5, or `-s/--source` for img2img. See the main README for restrictions. Outputs and model caches are outside this package; first use downloads and exports model data. Device selection is automatic unless `--device` is specified.

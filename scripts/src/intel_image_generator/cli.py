@@ -74,8 +74,8 @@ def _parser() -> argparse.ArgumentParser:
     source.add_argument("-p", "--prompt", help="one text prompt")
     source.add_argument("-i", "--input", type=Path, help="UTF-8 file with one prompt per nonblank line")
     parser.add_argument("-o", "--output", help="PNG destination (required for generation)")
-    parser.add_argument("-r", "--reference", type=Path, help="starting image for img2img; not an identity/style guarantee")
-    parser.add_argument("-s", "--style", type=Path, help="image reference conditioning for text-to-image (not img2img)")
+    parser.add_argument("-r", "--reference", type=Path, help="image reference conditioning for text-to-image (not img2img)")
+    parser.add_argument("-s", "--source", type=Path, help="starting image for img2img; not an identity/style guarantee")
     parser.add_argument("--strength", type=_strength, default=None, help="img2img denoising strength (0 < value <= 1; default 0.75)")
     parser.add_argument("--info", action="store_true", help="print selected device/model JSON without generation")
     parser.add_argument("--size", type=_size, default=(512, 512), metavar="WIDTHxHEIGHT")
@@ -125,14 +125,14 @@ def main() -> int:
             print(f"intel-image-generator: {exc}", file=sys.stderr)
             return 1
 
-    if args.style is not None and args.reference is not None:
-        parser.error("--style cannot be combined with --reference")
-    if args.style is not None and args.model != "stable-diffusion-v1-5/stable-diffusion-v1-5":
-        parser.error("--style requires --model stable-diffusion-v1-5/stable-diffusion-v1-5; NPU int8 and custom models are unsupported")
-    if args.style is not None and args.model_dir is not None:
-        parser.error("--style cannot be combined with --model-dir")
-    if args.strength is not None and args.reference is None:
-        parser.error("--strength requires --reference")
+    if args.reference is not None and args.source is not None:
+        parser.error("--reference cannot be combined with --source")
+    if args.reference is not None and args.model_dir is not None:
+        parser.error("--reference cannot be combined with --model-dir")
+    if args.reference is not None and args.model != "stable-diffusion-v1-5/stable-diffusion-v1-5":
+        parser.error("--reference requires --model stable-diffusion-v1-5/stable-diffusion-v1-5; NPU int8 and custom models are unsupported")
+    if args.strength is not None and args.source is None:
+        parser.error("--strength requires --source")
     strength = 0.75 if args.strength is None else args.strength
     if args.prompt is None and args.input is None:
         parser.error("exactly one of -p/--prompt or -i/--input is required")
@@ -163,6 +163,22 @@ def main() -> int:
         parser.error("an output destination aliases the input prompt file")
 
     reference = None
+    if args.source is not None:
+        if not args.source.is_file():
+            parser.error(f"source must be a readable regular image file: {args.source}")
+        try:
+            from PIL import Image, ImageOps
+            with Image.open(args.source) as opened:
+                opened.load()
+                reference = ImageOps.fit(ImageOps.exif_transpose(opened).convert("RGB"), (512, 512), method=Image.Resampling.LANCZOS).copy()
+        except (OSError, ValueError, Image.DecompressionBombError) as exc:
+            parser.error(f"cannot decode source image {args.source}: {exc}")
+        if any((path.exists() and os.path.samefile(path, args.source)) or path.resolve() == args.source.resolve() for path in destinations):
+            parser.error("an output destination aliases the source image")
+    if reference is not None and int(args.steps * strength) < 1:
+        parser.error("steps multiplied by img2img strength must be at least 1")
+
+    style = None
     if args.reference is not None:
         if not args.reference.is_file():
             parser.error(f"reference must be a readable regular image file: {args.reference}")
@@ -170,27 +186,11 @@ def main() -> int:
             from PIL import Image, ImageOps
             with Image.open(args.reference) as opened:
                 opened.load()
-                reference = ImageOps.fit(ImageOps.exif_transpose(opened).convert("RGB"), (512, 512), method=Image.Resampling.LANCZOS).copy()
-        except (OSError, ValueError) as exc:
+                style = ImageOps.exif_transpose(opened).convert("RGB").copy()
+        except (OSError, ValueError, Image.DecompressionBombError) as exc:
             parser.error(f"cannot decode reference image {args.reference}: {exc}")
         if any((path.exists() and os.path.samefile(path, args.reference)) or path.resolve() == args.reference.resolve() for path in destinations):
             parser.error("an output destination aliases the reference image")
-    if reference is not None and int(args.steps * strength) < 1:
-        parser.error("steps multiplied by img2img strength must be at least 1")
-
-    style = None
-    if args.style is not None:
-        if not args.style.is_file():
-            parser.error(f"style image must be a readable regular image file: {args.style}")
-        try:
-            from PIL import Image, ImageOps
-            with Image.open(args.style) as opened:
-                opened.load()
-                style = ImageOps.exif_transpose(opened).convert("RGB").copy()
-        except (OSError, ValueError, Image.DecompressionBombError) as exc:
-            parser.error(f"cannot decode style image {args.style}: {exc}")
-        if any((path.exists() and os.path.samefile(path, args.style)) or path.resolve() == args.style.resolve() for path in destinations):
-            parser.error("an output destination aliases the style image")
 
     try:
         with contextlib.redirect_stdout(sys.stderr):

@@ -29,7 +29,7 @@ def test_reference_preprocessed_and_strength_shared_for_prompt_file(tmp_path, mo
         return iter([Image.new("RGB", (2, 2)), Image.new("RGB", (2, 2))])
 
     install_backend(monkeypatch, backend)
-    argv(monkeypatch, "-i", prompts, "-r", ref, "-o", tmp_path / "out.png")
+    argv(monkeypatch, "-i", prompts, "-s", ref, "-o", tmp_path / "out.png")
     assert cli.main() == 0
     assert seen[0][0] == ["one", "two"]
     assert seen[0][1].mode == "RGB" and seen[0][1].size == (512, 512)
@@ -39,18 +39,18 @@ def test_reference_preprocessed_and_strength_shared_for_prompt_file(tmp_path, mo
 
 @pytest.mark.parametrize("bad", ["nan", "inf", "-inf", "0", "-0.1", "1.01", "wat"])
 def test_strength_invalid_values(bad, tmp_path, monkeypatch):
-    argv(monkeypatch, "-p", "x", "-r", tmp_path / "missing", "--strength", bad, "-o", tmp_path / "out.png")
+    argv(monkeypatch, "-p", "x", "-s", tmp_path / "missing", "--strength", bad, "-o", tmp_path / "out.png")
     with pytest.raises(SystemExit):
         cli.main()
 
 
-def test_strength_without_reference_and_zero_effective_steps(tmp_path, monkeypatch):
+def test_strength_without_source_and_zero_effective_steps(tmp_path, monkeypatch):
     argv(monkeypatch, "-p", "x", "--strength", ".5", "-o", tmp_path / "out.png")
     with pytest.raises(SystemExit):
         cli.main()
     ref = tmp_path / "r.png"
     Image.new("RGB", (8, 8)).save(ref)
-    argv(monkeypatch, "-p", "x", "-r", ref, "--steps", "1", "--strength", ".5", "-o", tmp_path / "out.png")
+    argv(monkeypatch, "-p", "x", "-s", ref, "--steps", "1", "--strength", ".5", "-o", tmp_path / "out.png")
     with pytest.raises(SystemExit):
         cli.main()
 
@@ -59,19 +59,19 @@ def test_reference_missing_corrupt_alias_rejected_before_backend(tmp_path, monke
     called = []
     install_backend(monkeypatch, lambda *a, **kw: called.append((a, kw)))
     for ref in (tmp_path / "missing.png", tmp_path):
-        argv(monkeypatch, "-p", "x", "-r", ref, "-o", tmp_path / "out.png")
+        argv(monkeypatch, "-p", "x", "-s", ref, "-o", tmp_path / "out.png")
         with pytest.raises(SystemExit):
             cli.main()
     corrupt = tmp_path / "bad.png"
     corrupt.write_text("not an image")
-    argv(monkeypatch, "-p", "x", "-r", corrupt, "-o", tmp_path / "out.png")
+    argv(monkeypatch, "-p", "x", "-s", corrupt, "-o", tmp_path / "out.png")
     with pytest.raises(SystemExit):
         cli.main()
     good = tmp_path / "good.png"
     Image.new("RGB", (8, 8)).save(good)
     alias = tmp_path / "alias.png"
     alias.symlink_to(good)
-    argv(monkeypatch, "-p", "x", "-r", good, "-o", alias)
+    argv(monkeypatch, "-p", "x", "-s", good, "-o", alias)
     with pytest.raises(SystemExit):
         cli.main()
     assert called == []
