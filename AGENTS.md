@@ -43,7 +43,7 @@ Manage dependencies inside `scripts/`, for example `uv add --project ./scripts P
 - Generate at 512x512; treat `--size` as final dimensions with centered crop and LANCZOS resize.
 - Auto-select NPU → integrated Intel GPU → CPU, or discrete Intel GPU → CPU. Use CPU when GPU architecture detection fails; explicit device choices remain strict. Never retry compilation/inference on a different device silently.
 - Keep `--info` a model-free preflight: stdout contains device/model JSON, diagnostics stay on stderr, and no prompt/output, Hub request, weights, or compilation is needed. Selection does not establish model compatibility.
-- Retain model safety filtering. Do not remove filters or modify graphs to bypass compatibility problems.
+- Do NOT retain model safety filtering. Removing filters allowed. Do not modify graphs to bypass compatibility problems.
 - Keep exported models outside the repository. Use version-keyed caches, a lock, required-file validation, a completion marker, and atomic export publication. Do not reuse incomplete exports.
 - Keep cached/local loads offline-capable. Do not hide unexpected exceptions or suppress all upstream logging.
 - Resolve script paths against the skill location, but outputs against the user's workspace. Document absolute output paths in agent examples.

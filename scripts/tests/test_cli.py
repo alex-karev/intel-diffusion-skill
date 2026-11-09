@@ -63,6 +63,51 @@ def test_output_aliases(alias, tmp_path, monkeypatch):
     assert seen == ["hello"]
 
 
+def test_style_aliases_and_propagation(tmp_path, monkeypatch):
+    style = tmp_path / "style.png"
+    Image.new("RGBA", (4, 3), (20, 40, 60, 70)).save(style)
+    calls = []
+    monkeypatch.setattr("intel_image_generator.generation.generate_prompts", lambda prompts, *args, **kwargs: (calls.append((prompts, args, kwargs)) or [Image.new("RGB", (2, 2))]))
+    for option in ("-s", "--style"):
+        output = tmp_path / f"out-{option[1:]}.png"
+        _args(monkeypatch, option, style, "--model", "stable-diffusion-v1-5/stable-diffusion-v1-5", "-o", output, "-p", "prompt")
+        assert cli.main() == 0
+    assert len(calls) == 2
+    assert all(call[2]["style"].mode == "RGB" and call[2]["style"].size == (4, 3) for call in calls)
+    assert all(call[2]["style"].getpixel((0, 0)) == (20, 40, 60) for call in calls)
+
+
+@pytest.mark.parametrize("extra", [["-r", "ref.png"], ["--strength", "0.5"], ["--model", "org/custom"], ["--model-dir", "."]])
+def test_style_incompatible_modes_rejected_before_backend(extra, tmp_path, monkeypatch):
+    style = tmp_path / "style.png"
+    Image.new("RGB", (2, 2)).save(style)
+    called = []
+    monkeypatch.setattr("intel_image_generator.generation.generate_prompts", lambda *a, **k: called.append((a, k)))
+    _args(monkeypatch, "--style", style, "--model", "stable-diffusion-v1-5/stable-diffusion-v1-5", *extra, "-o", tmp_path / "out.png", "-p", "prompt")
+    with pytest.raises(SystemExit): cli.main()
+    assert not called
+
+
+def test_corrupt_style_image_rejected_before_backend(tmp_path, monkeypatch):
+    style = tmp_path / "broken.png"
+    style.write_bytes(b"not an image")
+    called = []
+    monkeypatch.setattr("intel_image_generator.generation.generate_prompts", lambda *a, **k: called.append((a, k)))
+    _args(monkeypatch, "--style", style, "--model", "stable-diffusion-v1-5/stable-diffusion-v1-5", "-o", tmp_path / "out.png", "-p", "prompt")
+    with pytest.raises(SystemExit): cli.main()
+    assert not called
+
+
+def test_style_output_cannot_alias_source(tmp_path, monkeypatch):
+    style = tmp_path / "style.png"
+    Image.new("RGB", (2, 2)).save(style)
+    called = []
+    monkeypatch.setattr("intel_image_generator.generation.generate_prompts", lambda *a, **k: called.append((a, k)))
+    _args(monkeypatch, "--style", style, "--model", "stable-diffusion-v1-5/stable-diffusion-v1-5", "-o", style, "-p", "prompt")
+    with pytest.raises(SystemExit): cli.main()
+    assert not called
+
+
 @pytest.mark.parametrize("alias", ["-m", "--model"])
 def test_model_aliases_and_propagation(alias, tmp_path, monkeypatch):
     seen = []

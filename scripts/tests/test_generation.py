@@ -129,7 +129,7 @@ def test_legacy_default_cache_loaded_without_hub_lookup(monkeypatch, tmp_path):
     monkeypatch.setattr(generation, "_cache_path", lambda model=generation.MODEL: cache)
     monkeypatch.setattr(generation, "_model_config", lambda model: (_ for _ in ()).throw(AssertionError("Hub config queried")))
     assert generation.generate("prompt", "GPU", None, None, 17, 4) == "generated"
-    assert calls == [(str(cache), {"export": False, "compile": False, "device": "GPU", "local_files_only": True})]
+    assert calls == [(str(cache), {"export": False, "compile": False, "device": "GPU", "local_files_only": True, "safety_checker": None})]
     assert pipe.last_kwargs == {"prompt": "prompt", "num_inference_steps": 4, "num_images_per_prompt": 1, "height": 512, "width": 512, "generator": ("generator", 17)}
     assert ("compile",) in pipe.calls
 
@@ -142,6 +142,7 @@ def test_first_export_then_cache_hit(monkeypatch, tmp_path):
     generation._default_pipeline("GPU", generation.MODEL)
     assert len(calls) == 3
     assert calls[0][0] == generation.MODEL and calls[0][1]["export"] is True
+    assert all(kwargs["safety_checker"] is None for _, kwargs in calls)
     assert calls[1][0] == str(cache) and calls[1][1]["local_files_only"] is True
     assert calls[2][0] == str(cache)
     assert (cache / ".openvino-image-complete.json").is_file()
@@ -173,13 +174,12 @@ def test_export_failure_removes_temporary_cache(monkeypatch, tmp_path):
     assert calls[0][1]["export"] is True
 
 
-def test_local_model_loaded_offline_and_safety_options_untouched(monkeypatch, tmp_path):
+def test_local_model_loaded_offline_without_safety_checker(monkeypatch, tmp_path):
     pipe, calls = install_fakes(monkeypatch, ("CPU", "GPU"))
     model_dir = tmp_path / "model"
     pipe.save_pretrained(model_dir)
     generation.generate("x", "CPU", model_dir, None, None, 2)
-    assert calls[0] == (str(model_dir), {"export": False, "compile": False, "device": "CPU", "local_files_only": True})
-    assert "safety_checker" not in calls[0][1]
+    assert calls[0] == (str(model_dir), {"export": False, "compile": False, "device": "CPU", "local_files_only": True, "safety_checker": None})
     assert ("compile",) in pipe.calls
 
 
@@ -345,6 +345,18 @@ def test_npu_static_reshape_before_compile_and_cache_reused_across_devices(monke
     assert ("compile",) in pipe.calls
     assert [call[1]["device"] for call in calls] == ["NPU", "GPU"]
     assert all(call[1]["export"] is False for call in calls)
+
+
+def test_style_rejects_unsupported_model_before_runtime(monkeypatch):
+    monkeypatch.setattr(generation, "_select_device", lambda requested: "NPU")
+    with pytest.raises(RuntimeError, match="requires the original SD 1.5"):
+        list(generation.generate_prompts(["p"], "NPU", None, "org/other", None, 4, style=object()))
+
+
+def test_style_rejects_local_export_before_runtime(monkeypatch):
+    monkeypatch.setattr(generation, "_select_device", lambda requested: "NPU")
+    with pytest.raises(RuntimeError, match="requires the original SD 1.5"):
+        list(generation.generate_prompts(["p"], "NPU", Path("/tmp/model"), generation.MODEL, None, 4, style=object()))
 
 
 def test_npu_compile_error_identifies_model_and_device(monkeypatch, tmp_path):

@@ -75,6 +75,7 @@ def _parser() -> argparse.ArgumentParser:
     source.add_argument("-i", "--input", type=Path, help="UTF-8 file with one prompt per nonblank line")
     parser.add_argument("-o", "--output", help="PNG destination (required for generation)")
     parser.add_argument("-r", "--reference", type=Path, help="starting image for img2img; not an identity/style guarantee")
+    parser.add_argument("-s", "--style", type=Path, help="image reference conditioning for text-to-image (not img2img)")
     parser.add_argument("--strength", type=_strength, default=None, help="img2img denoising strength (0 < value <= 1; default 0.75)")
     parser.add_argument("--info", action="store_true", help="print selected device/model JSON without generation")
     parser.add_argument("--size", type=_size, default=(512, 512), metavar="WIDTHxHEIGHT")
@@ -82,8 +83,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=_seed)
     parser.add_argument(
         "--device", choices=("NPU", "GPU", "CPU"), default=None,
-        help=("explicit device; default auto-detects discrete Intel GPU first, otherwise "
-              "NPU then integrated Intel GPU, with CPU fallback; explicit choices are strict"),
+        help=("explicit device; auto prefers a discrete Intel GPU when present, otherwise "
+              "NPU then integrated Intel GPU, with CPU last; explicit choices are strict"),
     )
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("-m", "--model", type=_model, help="Hugging Face model (default depends on device)")
@@ -124,6 +125,12 @@ def main() -> int:
             print(f"intel-image-generator: {exc}", file=sys.stderr)
             return 1
 
+    if args.style is not None and args.reference is not None:
+        parser.error("--style cannot be combined with --reference")
+    if args.style is not None and args.model != "stable-diffusion-v1-5/stable-diffusion-v1-5":
+        parser.error("--style requires --model stable-diffusion-v1-5/stable-diffusion-v1-5; NPU int8 and custom models are unsupported")
+    if args.style is not None and args.model_dir is not None:
+        parser.error("--style cannot be combined with --model-dir")
     if args.strength is not None and args.reference is None:
         parser.error("--strength requires --reference")
     strength = 0.75 if args.strength is None else args.strength
@@ -171,10 +178,26 @@ def main() -> int:
     if reference is not None and int(args.steps * strength) < 1:
         parser.error("steps multiplied by img2img strength must be at least 1")
 
+    style = None
+    if args.style is not None:
+        if not args.style.is_file():
+            parser.error(f"style image must be a readable regular image file: {args.style}")
+        try:
+            from PIL import Image, ImageOps
+            with Image.open(args.style) as opened:
+                opened.load()
+                style = ImageOps.exif_transpose(opened).convert("RGB").copy()
+        except (OSError, ValueError, Image.DecompressionBombError) as exc:
+            parser.error(f"cannot decode style image {args.style}: {exc}")
+        if any((path.exists() and os.path.samefile(path, args.style)) or path.resolve() == args.style.resolve() for path in destinations):
+            parser.error("an output destination aliases the style image")
+
     try:
         with contextlib.redirect_stdout(sys.stderr):
             from .generation import generate_prompts
-            if reference is None:
+            if style is not None:
+                images = generate_prompts(prompts, args.device, args.model_dir, args.model, args.seed, args.steps, style=style)
+            elif reference is None:
                 images = generate_prompts(prompts, args.device, args.model_dir, args.model, args.seed, args.steps)
             else:
                 images = generate_prompts(prompts, args.device, args.model_dir, args.model, args.seed, args.steps, reference=reference, strength=strength)

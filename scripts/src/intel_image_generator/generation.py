@@ -112,7 +112,7 @@ def _load_cached(cache: Path, device: str, img2img: bool = False):
     if img2img and not all((cache / "vae_encoder" / f"openvino_model.{ext}").is_file() for ext in ("xml", "bin")):
         raise RuntimeError(f"Image-to-image requires an encoder-bearing OpenVINO export with vae_encoder at {cache}; use a compatible --model or --model-dir")
     return _pipeline_class(img2img).from_pretrained(
-        str(cache), export=False, compile=False, device=device, local_files_only=True
+        str(cache), export=False, compile=False, device=device, local_files_only=True, safety_checker=None
     )
 
 
@@ -210,7 +210,7 @@ def _default_pipeline(device: str, model: str, img2img: bool = False):
             temporary = Path(tempfile.mkdtemp(prefix=f".{cache.name}-", dir=cache.parent))
             try:
                 pipe = OVStableDiffusionPipeline.from_pretrained(
-                    model, export=True, compile=False, device=device
+                    model, export=True, compile=False, device=device, safety_checker=None
                 )
                 pipe.save_pretrained(temporary)
                 if not _valid_export_without_marker(temporary):
@@ -345,19 +345,41 @@ def generate_prompts(
     steps: int,
     reference=None,
     strength: float = 0.75,
+    *,
+    style=None,
 ):
     device = _select_device(device)
-    model = model or _default_model(device)
+    if style is not None:
+        if model_dir is not None or model != "stable-diffusion-v1-5/stable-diffusion-v1-5" or reference is not None:
+            raise RuntimeError("Style conditioning requires the original SD 1.5 model, no --model-dir, and no img2img reference")
+        model = "stable-diffusion-v1-5/stable-diffusion-v1-5"
+    else:
+        model = model or _default_model(device)
     import torch
     pipeline_class = _pipeline_class(reference is not None)
 
-    if model_dir is not None:
+    style_runtime = None
+    if style is not None:
+        from . import style as style_module
+        style_cache = style_module.prepare_style(device)
+        pipe = _pipeline_class().from_pretrained(
+            str(style_cache), export=False, compile=False, device=device, local_files_only=True, safety_checker=None
+        )
+        if device == "NPU" or device.startswith("NPU."):
+            # Reshape standard OV components first; the adapter graph has its own proven fixed shape.
+            pipe.reshape(batch_size=1, height=512, width=512, num_images_per_prompt=1)
+        try:
+            style_runtime = style_module.StyleRuntime(pipe, style_cache, device)
+        except RuntimeError as exc:
+            raise RuntimeError(f"Failed to compile style encoder/adapter UNet for {device}: {exc}") from exc
+        pipe.unet = style_runtime
+    elif model_dir is not None:
         _say(f"loading local model from {model_dir}")
         _validate_local_model(model_dir)
         if reference is not None and not all((model_dir / "vae_encoder" / f"openvino_model.{ext}").is_file() for ext in ("xml", "bin")):
             raise RuntimeError(f"Image-to-image requires an encoder-bearing OpenVINO export with vae_encoder at {model_dir}; use a compatible --model or --model-dir")
         pipe = pipeline_class.from_pretrained(
-            str(model_dir), export=False, compile=False, device=device, local_files_only=True
+            str(model_dir), export=False, compile=False, device=device, local_files_only=True, safety_checker=None
         )
     else:
         pipe = _prepare_hub_pipeline(device, model, img2img=True) if reference is not None else _prepare_hub_pipeline(device, model)
@@ -365,11 +387,14 @@ def generate_prompts(
     npu = device == "NPU" or device.startswith("NPU.")
     generator = torch.Generator().manual_seed(seed) if seed is not None else None
     try:
-        if npu:
+        if npu and style_runtime is None:
             pipe.reshape(batch_size=1, height=512, width=512, num_images_per_prompt=1)
         selected_model = str(model_dir.resolve()) if model_dir is not None else model
-        shape_policy = ("img2img-" if reference is not None else "") + ("npu-static-1x512x512" if npu else "dynamic-512x512")
-        _configure_compiled_cache(pipe, selected_model, device, shape_policy)
+        shape_policy = ("style-" if style_runtime is not None else "") + ("img2img-" if reference is not None else "") + ("npu-static-1x512x512" if npu else "dynamic-512x512")
+        if style_runtime is None:
+            _configure_compiled_cache(pipe, selected_model, device, shape_policy)
+        else:
+            _say("style graphs compiled directly; device compiler-cache persistence is unavailable")
         _say(f"compiling for {device}")
         pipe.compile()
     except RuntimeError as exc:
@@ -389,6 +414,8 @@ def generate_prompts(
         else:
             kwargs["image"] = reference.copy()
             kwargs["strength"] = strength
+        if style_runtime is not None:
+            kwargs["ip_adapter_image_embeds"] = [style_runtime.embeds(style, pipe.feature_extractor)]
         if generator is not None:
             kwargs["generator"] = generator
         _say("generating image")
@@ -407,5 +434,7 @@ def generate(
     steps: int,
     reference=None,
     strength: float = 0.75,
+    *,
+    style=None,
 ):
-    return next(generate_prompts([prompt], device, model_dir, model, seed, steps, reference, strength))
+    return next(generate_prompts([prompt], device, model_dir, model, seed, steps, reference, strength, style=style))
